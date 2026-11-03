@@ -1,0 +1,117 @@
+import fs from "node:fs/promises";
+import { setFiles, vol } from "../test/memoryFs.js";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SETTINGS as JAVAC_PARAMETERS_SETTINGS } from "../addJavacParametersOption.js";
+import { SETTINGS as MISSING_SERIAL_VERSION_SETTINGS } from "../addMissingSerialVersionWarningOption.js";
+import { addOption } from "./addJDTOption.js";
+
+/**
+ * @type {[string, import("./addJDTOption.js").JDTOptionSettings][]}
+ */
+const TEST_CASES = [
+  ["JDT methodParameters", JAVAC_PARAMETERS_SETTINGS],
+  ["JDT missingSerialVersion", MISSING_SERIAL_VERSION_SETTINGS],
+];
+
+vi.mock("node:fs/promises", async () => {
+  const { fs } = await import("../test/memoryFs.js");
+  return { default: fs.promises, ...fs.promises };
+});
+
+describe.each(TEST_CASES)("addOption - %s", (_name, SETTINGS) => {
+  const settingsDir = SETTINGS.DIR;
+  const prefsFile = SETTINGS.FILE;
+  const prefsPath = path.join(settingsDir, prefsFile);
+  const optionLine = `${SETTINGS.OPTION.KEY}=${SETTINGS.OPTION.VALUE}\n`;
+
+  beforeEach(() => {
+    setFiles({});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vol.reset();
+    vi.restoreAllMocks();
+  });
+
+  it("1. .settings 디렉토리와 prefs 파일이 생성되고 옵션이 추가된다", async () => {
+    await addOption(SETTINGS);
+
+    const content = await fs.readFile(prefsPath, "utf8");
+    expect(content).toBe(optionLine);
+    expect(console.log).toHaveBeenCalledWith(
+      `Created new prefs file with ${SETTINGS.OPTION.DISPLAY_NAME}=${SETTINGS.OPTION.VALUE} option.`,
+    );
+  });
+
+  it("2. 이미 옵션이 존재할 때 메시지가 올바르게 출력된다", async () => {
+    setFiles({
+      [settingsDir]: {
+        [prefsFile]: optionLine,
+      },
+    });
+
+    await addOption(SETTINGS);
+
+    expect(console.log).toHaveBeenCalledWith(
+      `The ${SETTINGS.OPTION.DISPLAY_NAME}=${SETTINGS.OPTION.VALUE} option already exists for VSCode Java environment.`,
+    );
+  });
+
+  it("3. 옵션이 없을 때 기존 내용 뒤에 옵션이 추가된다", async () => {
+    const oldContent = "some.other.option=value\n";
+    setFiles({
+      [settingsDir]: {
+        [prefsFile]: oldContent,
+      },
+    });
+
+    await addOption(SETTINGS);
+
+    const content = await fs.readFile(prefsPath, "utf8");
+    expect(content).toBe(oldContent + optionLine);
+    expect(console.log).toHaveBeenCalledWith(
+      `The ${SETTINGS.OPTION.DISPLAY_NAME}=${SETTINGS.OPTION.VALUE} option has been added for VSCode Java environment.`,
+    );
+  });
+
+  it(`4. 옵션 키가 이미 있지만 값이 다르면 설정 값으로 수정된다`, async () => {
+    const oldContent =
+      "some.other.option=value\n" + `${SETTINGS.OPTION.KEY}=none\n`;
+    setFiles({
+      [settingsDir]: {
+        [prefsFile]: oldContent,
+      },
+    });
+
+    await addOption(SETTINGS);
+
+    const content = await fs.readFile(prefsPath, "utf8");
+    expect(content).toBe("some.other.option=value\n" + optionLine);
+    expect(console.log).toHaveBeenCalledWith(
+      `The ${SETTINGS.OPTION.DISPLAY_NAME} option has been updated to ${SETTINGS.OPTION.VALUE} for VSCode Java environment.`,
+    );
+  });
+
+  it("5. 옵션 키가 2개 이상 있으면 경고를 출력하고 파일을 변경하지 않는다", async () => {
+    const oldContent =
+      "some.other.option=value\n" +
+      `${SETTINGS.OPTION.KEY}=none\n` +
+      `${SETTINGS.OPTION.KEY}=none\n`;
+    setFiles({
+      [settingsDir]: {
+        [prefsFile]: oldContent,
+      },
+    });
+
+    await addOption(SETTINGS);
+
+    const content = await fs.readFile(prefsPath, "utf8");
+    expect(content).toBe(oldContent);
+    expect(console.warn).toHaveBeenCalledWith(
+      `Multiple ${SETTINGS.OPTION.DISPLAY_NAME} options were found. No changes were made.`,
+    );
+  });
+});
